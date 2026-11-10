@@ -26,6 +26,7 @@ struct SignInView: View {
     @State private var pairingServer: PhonePairingServer?
     @State private var pairingURL: URL?
     @State private var pairingUnavailable = false
+    @State private var pairingProgress = PairingProgress()
     @State private var showManualEntry = false
 
     private var parsedSessionID: String? {
@@ -98,9 +99,14 @@ struct SignInView: View {
             .frame(width: 460, height: 460)
 
             if let pairingURL {
+                Label(pairingProgress.message, systemImage: pairingProgress.symbol)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.white.opacity(pairingProgress.stage == .waiting ? 0.6 : 0.95))
+                    .contentTransition(.opacity)
+                    .animation(.easeInOut, value: pairingProgress.stage)
                 Text(Self.displayAddress(pairingURL))
                     .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(.white.opacity(0.4))
             }
         }
     }
@@ -171,7 +177,10 @@ struct SignInView: View {
 
     private func startPairing() async {
         guard pairingServer == nil else { return }
-        let server = PhonePairingServer { [auth] sessionID in
+        let progress = pairingProgress
+        let server = PhonePairingServer(onEvent: { event in
+            Task { @MainActor in progress.advance(to: event) }
+        }) { [auth] sessionID in
             do {
                 try await auth.completeSignIn(sessionID: sessionID)
                 return nil
@@ -354,6 +363,39 @@ struct SignInView: View {
         } catch {
             errorMessage = error.localizedDescription
             fieldFocused = true
+        }
+    }
+}
+
+/// What the TV knows about the phone side, shown under the QR code. Lets the
+/// user tell "my phone can't reach the TV" from "Patreon refused the cookie".
+@Observable
+@MainActor
+final class PairingProgress {
+    enum Stage { case waiting, pageOpened, verifying }
+
+    private(set) var stage: Stage = .waiting
+
+    func advance(to event: PhonePairingServer.Event) {
+        switch event {
+        case .pageOpened: if stage == .waiting { stage = .pageOpened }
+        case .verifying: stage = .verifying
+        }
+    }
+
+    var message: String {
+        switch stage {
+        case .waiting: L10n.string("Waiting for your phone…")
+        case .pageOpened: L10n.string("Page opened on your phone")
+        case .verifying: L10n.string("Checking with Patreon…")
+        }
+    }
+
+    var symbol: String {
+        switch stage {
+        case .waiting: "iphone.radiowaves.left.and.right"
+        case .pageOpened: "checkmark.circle.fill"
+        case .verifying: "hourglass"
         }
     }
 }

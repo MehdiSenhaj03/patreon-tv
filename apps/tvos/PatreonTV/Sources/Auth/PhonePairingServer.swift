@@ -16,7 +16,7 @@
 //    POSTing, so even someone sniffing the Wi-Fi only sees random bytes
 //    (one-time pad: each pairing screen draws a fresh one).
 //  • The server stops as soon as a session is accepted, when the sign-in
-//    screen goes away, after a few failed attempts, or after 10 minutes.
+//    screen goes away, or after a few failed attempts.
 //
 //  It's still cookie authentication — this only replaces typing the cookie
 //  with the Siri Remote.
@@ -33,6 +33,14 @@ final class PhonePairingServer: @unchecked Sendable {
     /// on the phone when rejected.
     typealias Handler = @Sendable (String) async -> String?
 
+    /// Progress shown on the TV, so the user can tell whether the phone
+    /// reached it at all.
+    enum Event: Sendable {
+        case pageOpened
+        case verifying
+    }
+    typealias EventHandler = @Sendable (Event) -> Void
+
     /// The address to encode in the QR code.
     private(set) var pairingURL: URL?
 
@@ -41,16 +49,19 @@ final class PhonePairingServer: @unchecked Sendable {
     private let token = PhonePairingServer.randomBytes(16).base64URL
     private let pad = PhonePairingServer.randomBytes(128)
     private let handler: Handler
+    private let onEvent: EventHandler
 
     private var listener: NWListener?
     private var attempts = 0
     private var finished = false
 
     static let maxAttempts = 5
-    static let lifetime: TimeInterval = 600
+    /// Same port every time when free, so the address stays recognisable.
+    static let preferredPort: UInt16 = 47800
     static let maxRequestSize = 16_384
 
-    init(handler: @escaping Handler) {
+    init(onEvent: @escaping EventHandler = { _ in }, handler: @escaping Handler) {
+        self.onEvent = onEvent
         self.handler = handler
     }
 
@@ -62,12 +73,24 @@ final class PhonePairingServer: @unchecked Sendable {
             return nil
         }
 
-        let port: UInt16? = await withCheckedContinuation { continuation in
+        var port = await listen(on: NWEndpoint.Port(rawValue: Self.preferredPort))
+        if port == nil { port = await listen(on: nil) }
+        guard let port else { return nil }
+        let url = URL(string: "http://\(address):\(port)/p/\(token)#k=\(pad.base64URL)")
+        queue.sync { pairingURL = url }
+        return url
+    }
+
+    /// Starts the listener on `port` (any free port when nil). Returns the
+    /// bound port, or nil on failure.
+    private func listen(on requested: NWEndpoint.Port?) async -> UInt16? {
+        await withCheckedContinuation { continuation in
             queue.async {
                 do {
                     let parameters = NWParameters.tcp
                     parameters.allowLocalEndpointReuse = true
-                    let listener = try NWListener(using: parameters)
+                    let listener = try requested.map { try NWListener(using: parameters, on: $0) }
+                        ?? NWListener(using: parameters)
                     let once = ResumeOnce()
                     listener.stateUpdateHandler = { [weak self] state in
                         switch state {
@@ -75,6 +98,7 @@ final class PhonePairingServer: @unchecked Sendable {
                             if once.claim() { continuation.resume(returning: listener.port?.rawValue) }
                         case .failed(let error):
                             self?.log.error("Pairing listener failed: \(String(describing: error))")
+                            listener.cancel()
                             if once.claim() { continuation.resume(returning: nil) }
                         default:
                             break
@@ -91,12 +115,6 @@ final class PhonePairingServer: @unchecked Sendable {
                 }
             }
         }
-
-        guard let port else { return nil }
-        let url = URL(string: "http://\(address):\(port)/p/\(token)#k=\(pad.base64URL)")
-        queue.sync { pairingURL = url }
-        queue.asyncAfter(deadline: .now() + Self.lifetime) { [weak self] in self?.stopOnQueue() }
-        return url
     }
 
     func stop() {
@@ -145,6 +163,7 @@ final class PhonePairingServer: @unchecked Sendable {
 
         switch request.method {
         case "GET":
+            onEvent(.pageOpened)
             respond(connection, status: "200 OK", type: "text/html; charset=utf-8", body: Data(PairingPage.html.utf8))
         case "POST":
             receiveSession(request.body, on: connection)
@@ -171,6 +190,7 @@ final class PhonePairingServer: @unchecked Sendable {
         }
 
         let handler = self.handler
+        onEvent(.verifying)
         Task {
             let failure = await handler(sessionID)
             self.queue.async {
