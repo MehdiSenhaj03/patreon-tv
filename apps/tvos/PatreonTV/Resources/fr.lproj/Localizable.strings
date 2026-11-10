@@ -203,3 +203,16 @@
 "format.voteAccessibilitySelected" = "%@, %lld votes, %lld pour cent, votre vote";
 "format.votesSummary" = "%lld · %lld%%";
 "format.watched" = "Vu %@ sur %@";
+
+/* Phone pairing */
+"Pairing QR code" = "QR code d'appairage";
+"No network connection" = "Pas de connexion réseau";
+"Sign in with your phone" = "Connecte-toi avec ton téléphone";
+"No typing with the remote: your phone sends the session to this TV over your Wi-Fi." = "Rien à taper avec la télécommande : ton téléphone envoie la session à cette TV par ton Wi-Fi.";
+"Scan the QR code with your phone's camera (same Wi-Fi as the TV)." = "Scanne le QR code avec l'appareil photo de ton téléphone (même Wi-Fi que la TV).";
+"Paste your Patreon session_id cookie on the page that opens." = "Colle ton cookie Patreon session_id sur la page qui s'ouvre.";
+"Tap Send: this TV signs in by itself." = "Appuie sur Envoyer : la TV se connecte toute seule.";
+"The page comes from this Apple TV, not from the Internet. The cookie is encrypted with a one-time key contained in the QR code." = "La page vient de cette Apple TV, pas d'Internet. Le cookie est chiffré avec une clé à usage unique contenue dans le QR code.";
+"Enter it on the TV instead" = "Le saisir sur la TV";
+"Use my phone instead" = "Utiliser mon téléphone";
+"Your Patreon session expired. Send a fresh session ID to reconnect this TV." = "Ta session Patreon a expiré. Envoie un nouvel ID de session pour reconnecter cette TV.";

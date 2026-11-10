@@ -24,6 +24,8 @@ struct HomeShell: View {
     /// Re-render the shell when the app language changes so L10n-built labels
     /// (tab titles, menu titles) refresh immediately.
     @Environment(\.locale) private var locale
+    /// Set when embedded in a host app: Back at the top level returns there.
+    @Environment(\.exitApp) private var exitApp
 
     /// The tab the app opened on, resolved once at launch. Frozen so the
     /// first-element focus only applies to the launch tab (a later tab change
@@ -87,6 +89,7 @@ struct HomeShell: View {
         .background(PatreonColors.background.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .onAppear { resolveInitialTab() }
+        .onExitCommand(perform: exitApp)
         .overlay(alignment: .topLeading) {
             Image("PTVMark")
                 .resizable()

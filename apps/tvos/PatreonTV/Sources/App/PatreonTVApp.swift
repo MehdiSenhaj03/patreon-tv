@@ -2,42 +2,17 @@
 //  PatreonTVApp.swift
 //  PatreonTV
 //
-//  App entry point. Owns the AuthStore so the auth gate can decide whether
-//  to show the sign-in flow or the main app.
+//  App entry point. The app itself lives in PatreonRoot so it can also be
+//  embedded in a host app.
 //
 
 import SwiftUI
 
 @main
 struct PatreonTVApp: App {
-
-    @State private var authStore = AuthStore()
-    @State private var router = DeepLinkRouter()
-    @State private var preferences = ContentPreferences.shared
-
     var body: some Scene {
         WindowGroup {
-            content
-                .environment(authStore)
-                .environment(router)
-                .environment(\.locale, preferences.language.locale)
-                .onOpenURL { url in
-                    router.handle(url: url)
-                }
+            PatreonRoot()
         }
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        #if DEBUG
-        if GalleryConfig.isActive {
-            // Storybook-style capture mode (see GalleryHostView / capture-screens.sh).
-            GalleryHostView()
-        } else {
-            RootView().task { await authStore.restoreSession() }
-        }
-        #else
-        RootView().task { await authStore.restoreSession() }
-        #endif
     }
 }

@@ -49,8 +49,11 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: com.patreontv.PatreonTV
             CFBundleURLSchemes: [patreontv]
+        # Phone pairing: the sign-in screen serves a page on the local network.
+        NSLocalNetworkUsageDescription: "PatreonTV shows a QR code so your phone can send your Patreon session to this Apple TV over your local network."
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: false
+          NSAllowsLocalNetworking: true
           NSExceptionDomains:
             patreon.com:
               NSIncludesSubdomains: true
