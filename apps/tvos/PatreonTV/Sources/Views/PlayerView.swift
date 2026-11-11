@@ -289,6 +289,8 @@ final class PlayerHostViewController: UIViewController, AVPlayerViewControllerDe
     private(set) var isPictureInPictureActive = false
     /// Strong reference: `AVAssetResourceLoader` holds its delegate weakly.
     private var assetResourceLoader: PatreonAssetResourceLoader?
+    /// Same, for the loader that pins the HLS variant (video quality setting).
+    private var qualityLoader: HLSQualityLoader?
     private let log = Logger(subsystem: "com.patreontv.PatreonTV", category: "Player")
 
     override func viewDidLoad() {
@@ -490,10 +492,30 @@ final class PlayerHostViewController: UIViewController, AVPlayerViewControllerDe
             "Origin": "https://www.patreon.com",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
         ]
+        // Video quality: unless set to Automatic, open HLS streams through a
+        // loader that keeps only the chosen variant (see HLSQualityLoader).
+        // First-party patreon.com manifests keep their cookie loader instead.
+        let quality = ContentPreferences.shared.videoQuality
+        var assetURL = source.url
+        if quality != .automatic,
+           source.kind == .video,
+           !PatreonAssetResourceLoader.isPatreonHost(source.url.host),
+           ["m3u8", "m3u"].contains(source.url.pathExtension.lowercased()),
+           let wrapped = HLSQualityLoader.wrappedURL(for: source.url) {
+            assetURL = wrapped
+            log.info("Pinning HLS quality: \(quality.rawValue)")
+        }
+
         let asset = AVURLAsset(
-            url: source.url,
+            url: assetURL,
             options: ["AVURLAssetHTTPHeaderFieldsKey": playbackHeaders]
         )
+
+        if assetURL != source.url {
+            let loader = HLSQualityLoader(maxHeight: quality.maxHeight, headers: playbackHeaders)
+            qualityLoader = loader
+            asset.resourceLoader.setDelegate(loader, queue: DispatchQueue(label: "com.patreontv.HLSQualityLoader"))
+        }
 
         // Some posts (those with a preview) serve the full video through a
         // first-party manifest that authorises via the session cookie, not a

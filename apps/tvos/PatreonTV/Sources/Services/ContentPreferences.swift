@@ -31,6 +31,32 @@ final class ContentPreferences {
         }
     }
 
+    /// Video quality for HLS streams. AVPlayer normally adapts on its own and
+    /// tends to start low; the other choices pin a variant (HLSQualityLoader).
+    enum VideoQuality: String, CaseIterable, Identifiable {
+        case maximum, p1080, p720, automatic
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .maximum: L10n.string("Maximum")
+            case .p1080: "1080p"
+            case .p720: "720p"
+            case .automatic: L10n.string("Automatic")
+            }
+        }
+
+        /// Highest variant height to keep; nil = the best available.
+        var maxHeight: Int? {
+            switch self {
+            case .maximum, .automatic: nil
+            case .p1080: 1080
+            case .p720: 720
+            }
+        }
+    }
+
     private let matureKey = "show_mature_content"
     private let autoplayNextKey = "autoplay_next"
     private let autoplayNewKey = "autoplay_new"
@@ -42,6 +68,7 @@ final class ContentPreferences {
     private let collectionSeriesModeKey = "collection_series_mode"
     private let initialTabKey = "initial_tab"
     private let commentSortKey = "comments_sort"
+    private let videoQualityKey = "video_quality"
 
     /// When false (default), NSFW creators are hidden from Creators and Search.
     var showMatureContent: Bool {
@@ -116,6 +143,11 @@ final class ContentPreferences {
         didSet { UserDefaults.standard.set(commentSort.rawValue, forKey: commentSortKey) }
     }
 
+    /// Video quality (default Maximum).
+    var videoQuality: VideoQuality {
+        didSet { UserDefaults.standard.set(videoQuality.rawValue, forKey: videoQualityKey) }
+    }
+
     /// App interface language. Resolved from the system on first launch, then
     /// user-selectable in Settings.
     var language: AppLanguage {
@@ -136,6 +168,7 @@ final class ContentPreferences {
         collectionSeriesMode = UserDefaults.standard.object(forKey: collectionSeriesModeKey) as? Bool ?? false
         initialTab = InitialTab(rawValue: UserDefaults.standard.string(forKey: initialTabKey) ?? "") ?? .home
         commentSort = CommentSort(rawValue: UserDefaults.standard.string(forKey: commentSortKey) ?? "") ?? .best
+        videoQuality = VideoQuality(rawValue: UserDefaults.standard.string(forKey: videoQualityKey) ?? "") ?? .maximum
         if let raw = UserDefaults.standard.string(forKey: AppLanguage.storageKey),
            let stored = AppLanguage(rawValue: raw) {
             language = stored

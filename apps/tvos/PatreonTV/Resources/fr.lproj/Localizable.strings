@@ -225,3 +225,7 @@
 "The page comes from this Apple TV, not from the Internet, and the cookie is encrypted before it is sent." = "La page vient de cette Apple TV, pas d'Internet, et le cookie est chiffré avant d'être envoyé.";
 "Waiting for your phone or computer…" = "En attente du téléphone ou de l'ordinateur…";
 "Page opened, waiting for the cookie" = "Page ouverte, en attente du cookie";
+"Video quality" = "Qualité vidéo";
+"Maximum" = "Maximale";
+"Automatic" = "Automatique";
+"Maximum always plays the best version available. Automatic lets the player adapt to your connection." = "Maximale lit toujours la meilleure version disponible. Automatique laisse le lecteur s'adapter à ta connexion.";

@@ -108,6 +108,7 @@ struct SettingsView: View {
             autoplayRow
 
             initialTabSection
+            videoQualitySection
             commentOrderSection
             cacheRow
             signOutButton
@@ -320,6 +321,24 @@ struct SettingsView: View {
                 options: ContentPreferences.InitialTab.allCases,
                 label: { $0.title },
                 selection: $prefs.initialTab
+            )
+        }
+        .frame(maxWidth: settingsControlWidth, alignment: .leading)
+    }
+
+    private var videoQualitySection: some View {
+        @Bindable var prefs = prefs
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Video quality")
+                .foregroundStyle(PatreonColors.primaryText)
+            Text("Maximum always plays the best version available. Automatic lets the player adapt to your connection.")
+                .font(.caption)
+                .foregroundStyle(PatreonColors.secondaryText)
+            SettingsChoiceRow(
+                options: ContentPreferences.VideoQuality.allCases,
+                label: { $0.title },
+                selection: $prefs.videoQuality
             )
         }
         .frame(maxWidth: settingsControlWidth, alignment: .leading)
