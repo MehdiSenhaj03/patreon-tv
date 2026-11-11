@@ -25,6 +25,7 @@ struct SignInView: View {
     /// Phone pairing: QR code shown by default, manual entry on request.
     @State private var pairingServer: PhonePairingServer?
     @State private var pairingURL: URL?
+    @State private var pairingAddress: String?
     @State private var pairingUnavailable = false
     @State private var pairingProgress = PairingProgress()
     @State private var showManualEntry = false
@@ -104,11 +105,45 @@ struct SignInView: View {
                     .foregroundStyle(.white.opacity(pairingProgress.stage == .waiting ? 0.6 : 0.95))
                     .contentTransition(.opacity)
                     .animation(.easeInOut, value: pairingProgress.stage)
-                Text(Self.displayAddress(pairingURL))
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.4))
             }
         }
+    }
+
+    /// Typing the address on a computer: the code is what lets it in.
+    @ViewBuilder
+    private var computerPairing: some View {
+        if let pairingAddress, let code = pairingProgress.code {
+            VStack(alignment: .leading, spacing: 14) {
+                Label("On a computer", systemImage: "laptopcomputer")
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(0.7))
+                HStack(alignment: .firstTextBaseline, spacing: 18) {
+                    Text("Open")
+                        .foregroundStyle(.white.opacity(0.7))
+                    Text(pairingAddress)
+                        .font(.system(.title3, design: .monospaced).weight(.semibold))
+                        .foregroundStyle(.white)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 18) {
+                    Text("then enter the code")
+                        .foregroundStyle(.white.opacity(0.7))
+                    Text(Self.spaced(code))
+                        .font(.system(size: 44, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white)
+                        .contentTransition(.numericText())
+                        .animation(.easeInOut, value: code)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 20))
+        }
+    }
+
+    /// "K7MQ2P" → "K7M Q2P", easier to read across a room.
+    private static func spaced(_ code: String) -> String {
+        guard code.count == 6 else { return code }
+        return "\(code.prefix(3)) \(code.suffix(3))"
     }
 
     private var pairingSteps: some View {
@@ -139,7 +174,9 @@ struct SignInView: View {
                 step(3, "Tap Send: this TV signs in by itself.")
             }
 
-            Text("The page comes from this Apple TV, not from the Internet. The cookie is encrypted with a one-time key contained in the QR code.")
+            computerPairing
+
+            Text("The page comes from this Apple TV, not from the Internet, and the cookie is encrypted before it is sent.")
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.5))
                 .fixedSize(horizontal: false, vertical: true)
@@ -169,12 +206,6 @@ struct SignInView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// "192.168.1.20:51234" — enough to recognise the TV, without the secrets.
-    private static func displayAddress(_ url: URL) -> String {
-        guard let host = url.host else { return "" }
-        return url.port.map { "\(host):\($0)" } ?? host
-    }
-
     private func startPairing() async {
         guard pairingServer == nil else { return }
         let progress = pairingProgress
@@ -195,8 +226,10 @@ struct SignInView: View {
             }
         }
         pairingServer = server
-        if let url = await server.start() {
-            pairingURL = url
+        if let endpoint = await server.start() {
+            pairingURL = server.qrURL(for: endpoint)
+            pairingAddress = endpoint.shortURL
+            pairingProgress.code = endpoint.code
         } else {
             pairingUnavailable = true
         }
@@ -375,18 +408,21 @@ final class PairingProgress {
     enum Stage { case waiting, pageOpened, verifying }
 
     private(set) var stage: Stage = .waiting
+    /// Code to type on a computer; renewed by the server after wrong guesses.
+    var code: String?
 
     func advance(to event: PhonePairingServer.Event) {
         switch event {
         case .pageOpened: if stage == .waiting { stage = .pageOpened }
         case .verifying: stage = .verifying
+        case .codeChanged(let newCode): code = newCode
         }
     }
 
     var message: String {
         switch stage {
-        case .waiting: L10n.string("Waiting for your phone…")
-        case .pageOpened: L10n.string("Page opened on your phone")
+        case .waiting: L10n.string("Waiting for your phone or computer…")
+        case .pageOpened: L10n.string("Page opened, waiting for the cookie")
         case .verifying: L10n.string("Checking with Patreon…")
         }
     }

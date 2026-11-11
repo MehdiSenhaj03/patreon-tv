@@ -2,86 +2,117 @@
 //  PhonePairingServer.swift
 //  PatreonTV
 //
-//  Phone ↔ Apple TV pairing over the local network, with no server in between.
+//  Phone/computer ↔ Apple TV pairing over the local network, with no server in
+//  between.
 //
-//  While the sign-in screen is visible, the TV serves one small web page on the
-//  LAN and shows its address as a QR code:
+//  While the sign-in screen is visible, the TV serves a small web page on the
+//  LAN. Two ways in:
 //
-//      http://<tv-ip>:<port>/p/<token>#k=<one-time pad>
+//  • Phone: scan the QR code → http://<tv-ip>:<port>/<CODE>#pk=<TV public key>
+//  • Computer: type http://<tv-ip>:<port> and enter the code shown on the TV.
 //
-//  • <token> (128 random bits) is the only path the server answers. Anything
-//    else gets a 404, so another device on the network can't find the form.
-//  • The pad (128 random bytes) sits in the URL fragment, which browsers never
-//    send over the network. The page XORs the session cookie with it before
-//    POSTing, so even someone sniffing the Wi-Fi only sees random bytes
-//    (one-time pad: each pairing screen draws a fresh one).
-//  • The server stops as soon as a session is accepted, when the sign-in
-//    screen goes away, or after a few failed attempts.
+//  Security:
+//  • The 6-character code (≈1 billion combinations) is the only path that gets
+//    the form; wrong codes are counted and the code is renewed after a few.
+//  • The page encrypts the cookie before sending it: X25519 key agreement with
+//    the TV's key (TweetNaCl in the page, CryptoKit here), SHA-512 keystream,
+//    and a MAC so a modified message is rejected. Someone sniffing the Wi-Fi
+//    sees only random bytes.
+//  • From the QR code, the page also checks that the key it was served matches
+//    the one in the URL fragment (never sent over the network), which defeats
+//    a device on the LAN impersonating the TV.
+//  • The server stops once a session is accepted or the screen goes away.
 //
-//  It's still cookie authentication — this only replaces typing the cookie
-//  with the Siri Remote.
+//  It's still cookie authentication: this only replaces typing the cookie with
+//  the Siri Remote.
 //
 
+import CryptoKit
 import Foundation
 import Network
-import Security
 import os.log
 
 final class PhonePairingServer: @unchecked Sendable {
 
-    /// Verifies a session ID. Returns nil when accepted, or a message to show
-    /// on the phone when rejected.
+    /// Verifies a session ID. Returns nil when accepted, or an error code for
+    /// the page ("invalid", "network", "failed") when rejected.
     typealias Handler = @Sendable (String) async -> String?
 
-    /// Progress shown on the TV, so the user can tell whether the phone
-    /// reached it at all.
+    /// Progress shown on the TV, so the user can tell whether the phone or
+    /// computer reached it at all.
     enum Event: Sendable {
         case pageOpened
         case verifying
+        case codeChanged(String)
     }
     typealias EventHandler = @Sendable (Event) -> Void
 
-    /// The address to encode in the QR code.
-    private(set) var pairingURL: URL?
+    struct Endpoint: Sendable {
+        let address: String
+        let port: UInt16
+        let code: String
+
+        /// What to type on a computer.
+        var shortURL: String { "http://\(address):\(port)" }
+    }
 
     private let queue = DispatchQueue(label: "PatreonTV.PhonePairing")
     private let log = Logger(subsystem: "com.patreontv.PatreonTV", category: "Pairing")
-    private let token = PhonePairingServer.randomBytes(16).base64URL
-    private let pad = PhonePairingServer.randomBytes(128)
+    private let key = Curve25519.KeyAgreement.PrivateKey()
     private let handler: Handler
     private let onEvent: EventHandler
 
     private var listener: NWListener?
+    private var code = PhonePairingServer.makeCode()
+    private var wrongCodes = 0
     private var attempts = 0
     private var finished = false
 
     static let maxAttempts = 5
-    /// Same port every time when free, so the address stays recognisable.
+    static let maxWrongCodes = 10
+    /// Same port every time when free, so the address to type stays the same.
     static let preferredPort: UInt16 = 47800
     static let maxRequestSize = 16_384
+    /// No 0/O, 1/I/L: easy to read on a TV and to type.
+    private static let alphabet = Array("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
 
     init(onEvent: @escaping EventHandler = { _ in }, handler: @escaping Handler) {
         self.onEvent = onEvent
         self.handler = handler
     }
 
-    /// Starts listening and returns the pairing URL, or nil when the TV has no
-    /// usable local network address (e.g. not connected).
-    func start() async -> URL? {
+    var publicKey: Data { key.publicKey.rawRepresentation }
+
+    /// Starts listening. Returns nil when the TV has no usable local network
+    /// address (e.g. not connected) or the listener can't start.
+    func start() async -> Endpoint? {
         guard let address = Self.localIPv4Address() else {
             log.error("No local IPv4 address; phone pairing unavailable")
             return nil
         }
-
         var port = await listen(on: NWEndpoint.Port(rawValue: Self.preferredPort))
         if port == nil { port = await listen(on: nil) }
         guard let port else { return nil }
-        let url = URL(string: "http://\(address):\(port)/p/\(token)#k=\(pad.base64URL)")
-        queue.sync { pairingURL = url }
-        return url
+        let code = queue.sync { self.code }
+        return Endpoint(address: address, port: port, code: code)
     }
 
-    /// Starts the listener on `port` (any free port when nil). Returns the
+    /// QR code target: the code plus the TV's public key in the fragment.
+    func qrURL(for endpoint: Endpoint) -> URL? {
+        URL(string: "\(endpoint.shortURL)/\(endpoint.code)#pk=\(publicKey.base64URL)")
+    }
+
+    func stop() {
+        queue.async { [weak self] in self?.stopOnQueue() }
+    }
+
+    private func stopOnQueue() {
+        finished = true
+        listener?.cancel()
+        listener = nil
+    }
+
+    /// Starts the listener on `requested` (any free port when nil). Returns the
     /// bound port, or nil on failure.
     private func listen(on requested: NWEndpoint.Port?) async -> UInt16? {
         await withCheckedContinuation { continuation in
@@ -117,16 +148,6 @@ final class PhonePairingServer: @unchecked Sendable {
         }
     }
 
-    func stop() {
-        queue.async { [weak self] in self?.stopOnQueue() }
-    }
-
-    private func stopOnQueue() {
-        finished = true
-        listener?.cancel()
-        listener = nil
-    }
-
     // MARK: - HTTP
 
     private func accept(_ connection: NWConnection) {
@@ -157,14 +178,43 @@ final class PhonePairingServer: @unchecked Sendable {
 
     private func handle(_ request: HTTPRequest, on connection: NWConnection) {
         let path = request.path.split(separator: "?").first.map(String.init) ?? request.path
-        guard !finished, path == "/p/\(token)" else {
-            return respond(connection, status: "404 Not Found", type: "text/plain", body: Data("Not found".utf8))
+
+        if finished {
+            return respond(connection, status: "410 Gone", type: "text/html; charset=utf-8",
+                           body: Data(PairingPage.codeEntry(state: .closed).utf8))
+        }
+
+        switch (request.method, path) {
+        case ("GET", "/"):
+            return respond(connection, status: "200 OK", type: "text/html; charset=utf-8",
+                           body: Data(PairingPage.codeEntry(state: .initial).utf8))
+        case ("GET", "/nacl.js"):
+            return respond(connection, status: "200 OK", type: "text/javascript; charset=utf-8", body: Self.naclScript)
+        case (_, "/favicon.ico"):
+            return respond(connection, status: "404 Not Found", type: "text/plain", body: Data())
+        default:
+            break
+        }
+
+        // Everything else is /<CODE>.
+        let candidate = Self.normalizeCode(String(path.dropFirst()))
+        guard candidate == code else {
+            wrongCodes += 1
+            if wrongCodes >= Self.maxWrongCodes {
+                wrongCodes = 0
+                code = Self.makeCode()
+                log.info("Too many wrong pairing codes; renewed the code")
+                onEvent(.codeChanged(code))
+            }
+            return respond(connection, status: "404 Not Found", type: "text/html; charset=utf-8",
+                           body: Data(PairingPage.codeEntry(state: .wrongCode).utf8))
         }
 
         switch request.method {
         case "GET":
             onEvent(.pageOpened)
-            respond(connection, status: "200 OK", type: "text/html; charset=utf-8", body: Data(PairingPage.html.utf8))
+            respond(connection, status: "200 OK", type: "text/html; charset=utf-8",
+                    body: Data(PairingPage.form(publicKey: publicKey.base64EncodedString()).utf8))
         case "POST":
             receiveSession(request.body, on: connection)
         default:
@@ -178,24 +228,17 @@ final class PhonePairingServer: @unchecked Sendable {
             stopOnQueue()
             return respondJSON(connection, ok: false, message: "too_many_attempts")
         }
-
-        // Body: hex(cookie XOR pad)
-        let hex = String(decoding: body, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let cipher = Data(hex: hex), !cipher.isEmpty, cipher.count <= pad.count else {
-            return respondJSON(connection, ok: false, message: "bad_request")
-        }
-        let plain = Data(zip(cipher, pad).map { $0 ^ $1 })
-        guard let raw = String(data: plain, encoding: .utf8), let sessionID = SessionIDParser.parse(raw) else {
+        guard let raw = open(body), let sessionID = SessionIDParser.parse(raw) else {
             return respondJSON(connection, ok: false, message: "bad_request")
         }
 
-        let handler = self.handler
         onEvent(.verifying)
+        let handler = self.handler
         Task {
             let failure = await handler(sessionID)
             self.queue.async {
                 if failure == nil {
-                    self.log.info("Session received from phone and accepted")
+                    self.log.info("Session received over the network and accepted")
                     self.respondJSON(connection, ok: true, message: nil)
                     // Let the response go out before closing the listener.
                     self.queue.asyncAfter(deadline: .now() + 1) { self.stopOnQueue() }
@@ -204,6 +247,43 @@ final class PhonePairingServer: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Decrypts `{"epk", "ct", "tag"}` (base64) sealed by the page. Mirrors
+    /// `seal()` in PairingPage; returns nil if anything doesn't check out.
+    private func open(_ body: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: String],
+              let epk = object["epk"].flatMap({ Data(base64Encoded: $0) }),
+              let ct = object["ct"].flatMap({ Data(base64Encoded: $0) }),
+              let tag = object["tag"].flatMap({ Data(base64Encoded: $0) }),
+              !ct.isEmpty, ct.count <= 4096,
+              let peer = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: epk),
+              let secret = try? key.sharedSecretFromKeyAgreement(with: peer)
+        else { return nil }
+
+        let shared = secret.withUnsafeBytes { Data($0) }
+        func hash(_ parts: Data...) -> Data { Data(SHA512.hash(data: parts.reduce(Data(), +))) }
+
+        let macKey = Data(hash(shared, Data("ptv-mac".utf8)).prefix(32))
+        let expected = Data(hash(macKey, epk, ct).prefix(32))
+        // Constant-time comparison.
+        guard expected.count == tag.count, zip(expected, tag).reduce(0, { $0 | ($1.0 ^ $1.1) }) == 0 else {
+            log.error("Pairing message failed authentication")
+            return nil
+        }
+
+        let cipher = [UInt8](ct)
+        var plain = [UInt8]()
+        plain.reserveCapacity(cipher.count)
+        var block: UInt8 = 0
+        while plain.count < cipher.count {
+            let stream = [UInt8](hash(shared, Data("ptv-enc".utf8), Data([block])))
+            for byte in stream where plain.count < cipher.count {
+                plain.append(cipher[plain.count] ^ byte)
+            }
+            block &+= 1
+        }
+        return String(bytes: plain, encoding: .utf8)
     }
 
     private func respondJSON(_ connection: NWConnection, ok: Bool, message: String?) {
@@ -228,12 +308,22 @@ final class PhonePairingServer: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    private static func randomBytes(_ count: Int) -> Data {
-        var bytes = [UInt8](repeating: 0, count: count)
-        if SecRandomCopyBytes(kSecRandomDefault, count, &bytes) != errSecSuccess {
-            for i in bytes.indices { bytes[i] = UInt8.random(in: 0...255) }
-        }
-        return Data(bytes)
+    /// TweetNaCl.js, shipped in the app bundle (see Resources/Pairing/README.md).
+    private static let naclScript: Data = {
+        guard let url = Bundle.main.url(forResource: "nacl-fast.min", withExtension: "js"),
+              let data = try? Data(contentsOf: url)
+        else { return Data("/* nacl missing */".utf8) }
+        return data
+    }()
+
+    private static func makeCode() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return String((0..<6).map { _ in alphabet.randomElement(using: &generator)! })
+    }
+
+    /// "k7m-q2p", "K7M Q2P" → "K7MQ2P"
+    static func normalizeCode(_ raw: String) -> String {
+        String((raw.removingPercentEncoding ?? raw).uppercased().filter { $0.isLetter || $0.isNumber })
     }
 
     /// The TV's IPv4 address on Wi-Fi/Ethernet (en*), preferring private ranges.
@@ -309,19 +399,5 @@ private extension Data {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-    }
-
-    init?(hex: String) {
-        guard hex.count % 2 == 0 else { return nil }
-        var bytes = [UInt8]()
-        bytes.reserveCapacity(hex.count / 2)
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
-            bytes.append(byte)
-            index = next
-        }
-        self.init(bytes)
     }
 }
